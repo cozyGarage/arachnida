@@ -13,6 +13,9 @@ from datetime import datetime
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 import struct
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import threading
 
 
 # Supported image extensions
@@ -349,20 +352,197 @@ def delete_metadata(filepath: str) -> bool:
         return False
 
 
+class ScorpionGUI:
+    """Graphical User Interface for Scorpion."""
+    
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Scorpion - Metadata Explorer")
+        self.root.geometry("1000x700")
+        self.root.configure(bg="#1e1e1e")
+        
+        self.current_file = None
+        self.setup_ui()
+        
+    def setup_ui(self):
+        # Professional Dark Theme Styling
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Treeview", background="#2d2d2d", foreground="white", fieldbackground="#2d2d2d", borderwidth=0)
+        style.map("Treeview", background=[('selected', '#3d3d3d')])
+        style.configure("TFrame", background="#1e1e1e")
+        style.configure("TLabel", background="#1e1e1e", foreground="white", font=("Segoe UI", 10))
+        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"), foreground="#007acc")
+        style.configure("TButton", padding=6)
+
+        # Main Layout
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Toolbar
+        toolbar = ttk.Frame(main_frame)
+        toolbar.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Button(toolbar, text="Open File", command=self.load_file_dialog).pack(side=tk.LEFT, padx=5)
+        ttk.Button(toolbar, text="Delete All Metadata", command=self.delete_all_metadata).pack(side=tk.LEFT, padx=5)
+        
+        self.status_label = ttk.Label(toolbar, text="Welcome to Scorpion")
+        self.status_label.pack(side=tk.RIGHT, padx=5)
+        
+        # Content Area (Split Panes)
+        panes = tk.PanedWindow(main_frame, orient=tk.HORIZONTAL, bg="#333333", sashwidth=4)
+        panes.pack(fill=tk.BOTH, expand=True)
+        
+        # Left Side: File Info Panel
+        info_frame = ttk.Frame(panes)
+        panes.add(info_frame, width=300)
+        
+        ttk.Label(info_frame, text="File Information", style="Header.TLabel").pack(anchor=tk.W, pady=5)
+        self.files_text = tk.Text(info_frame, bg="#252526", fg="#cccccc", borderwidth=0, padx=10, pady=10, font=("Consolas", 9), height=15)
+        self.files_text.pack(fill=tk.BOTH, expand=True)
+        self.files_text.config(state=tk.DISABLED)
+        
+        # Right Side: Metadata Tree
+        tree_frame = ttk.Frame(panes)
+        panes.add(tree_frame)
+        
+        ttk.Label(tree_frame, text="Metadata Browser", style="Header.TLabel").pack(anchor=tk.W, pady=5)
+        
+        columns = ("Tag", "Value")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+        self.tree.heading("Tag", text="Attribute")
+        self.tree.heading("Value", text="Value")
+        self.tree.column("Tag", width=200)
+        self.tree.column("Value", width=400)
+        
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Double-click to edit (Experimental/Bonus)
+        self.tree.bind("<Double-1>", self.on_double_click)
+
+    def load_file_dialog(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.gif *.bmp"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.load_file(file_path)
+
+    def load_file(self, filepath):
+        self.current_file = filepath
+        self.status_label.config(text=f"Viewing: {os.path.basename(filepath)}")
+        
+        # Clear existing
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # File info
+        basic = get_basic_info(filepath)
+        img_info = get_image_info(filepath)
+        
+        self.files_text.config(state=tk.NORMAL)
+        self.files_text.delete(1.0, tk.END)
+        for k, v in {**basic, **img_info}.items():
+            self.files_text.insert(tk.END, f"{k}: {v}\n")
+        self.files_text.config(state=tk.DISABLED)
+        
+        # Metadata
+        exif, gps = get_exif_data(filepath)
+        
+        # Insert EXIF
+        exif_node = self.tree.insert("", tk.END, values=("Camera/EXIF Data", ""), open=True)
+        for k, v in exif.items():
+            self.tree.insert(exif_node, tk.END, values=(k, v))
+            
+        # Insert GPS
+        if gps:
+            gps_node = self.tree.insert("", tk.END, values=("GPS Coordinates", ""), open=True)
+            for k, v in gps.items():
+                self.tree.insert(gps_node, tk.END, values=(k, v))
+        
+        # Format specific
+        ext = get_extension(filepath)
+        if ext == '.png':
+            png_meta = get_png_metadata(filepath)
+            if png_meta:
+                node = self.tree.insert("", tk.END, values=("PNG Chunks", ""), open=True)
+                for k, v in png_meta.items():
+                    self.tree.insert(node, tk.END, values=(k, v))
+        elif ext == '.gif':
+            gif_meta = get_gif_metadata(filepath)
+            if gif_meta:
+                node = self.tree.insert("", tk.END, values=("GIF Animation Info", ""), open=True)
+                for k, v in gif_meta.items():
+                    self.tree.insert(node, tk.END, values=(k, v))
+
+    def on_double_click(self, event):
+        """Allow editing a tag value."""
+        item = self.tree.selection()[0]
+        column = self.tree.identify_column(event.x)
+        if column == "#2":  # Only allow editing the value column
+            tag = self.tree.item(item, "values")[0]
+            current_val = self.tree.item(item, "values")[1]
+            
+            # Create a popup for editing
+            edit_win = tk.Toplevel(self.root)
+            edit_win.title(f"Edit {tag}")
+            edit_win.geometry("400x150")
+            
+            ttk.Label(edit_win, text=f"New value for {tag}:").pack(pady=10)
+            entry = ttk.Entry(edit_win, width=50)
+            entry.insert(0, current_val)
+            entry.pack(pady=5, padx=10)
+            
+            def save_edit():
+                new_val = entry.get()
+                if modify_metadata(self.current_file, tag, new_val):
+                    self.load_file(self.current_file)
+                    edit_win.destroy()
+                else:
+                    messagebox.showerror("Error", "Could not modify metadata. Usually only JPEG EXIF tags are editable.")
+
+            ttk.Button(edit_win, text="Save", command=save_edit).pack(pady=10)
+
+    def delete_all_metadata(self):
+        if not self.current_file:
+            return
+        if messagebox.askyesno("Confirm Delete", "Remove ALL EXIF metadata from this image? (JPEG only)"):
+            if delete_metadata(self.current_file):
+                self.load_file(self.current_file)
+                messagebox.showinfo("Success", "Metadata removed.")
+            else:
+                messagebox.showerror("Error", "Could not remove metadata (ensure piexif is installed and it's a JPEG).")
+
+    def run(self):
+        self.root.mainloop()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Scorpion - Image metadata parser and viewer',
         usage='%(prog)s [OPTIONS] FILE1 [FILE2 ...]'
     )
-    parser.add_argument('files', metavar='FILE', nargs='+',
+    parser.add_argument('files', metavar='FILE', nargs='*',
                         help='Image files to analyze')
     parser.add_argument('-m', '--modify', nargs=2, metavar=('TAG', 'VALUE'),
                         help='Modify a metadata tag (JPEG only, requires piexif)')
     parser.add_argument('-d', '--delete', action='store_true',
                         help='Delete all EXIF metadata (JPEG only, requires piexif)')
+    parser.add_argument('-g', '--gui', action='store_true',
+                        help='Launch graphical interface')
     
     args = parser.parse_args()
     
+    if args.gui or len(args.files) == 0:
+        gui = ScorpionGUI()
+        if args.files:
+            gui.load_file(args.files[0])
+        gui.run()
+        return 0
+
     success_count = 0
     total_count = len(args.files)
     
